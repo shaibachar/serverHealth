@@ -142,6 +142,18 @@
       margin: 0.15rem 0.1rem;
     }
 
+    .health-badge {
+      display: inline-block;
+      border-radius: 12px;
+      padding: 0.1rem 0.55rem;
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+    .health-healthy   { background: #14532d; color: #4ade80; }
+    .health-unhealthy { background: #7f1d1d; color: #f87171; }
+    .health-starting  { background: #78350f; color: #fbbf24; }
+    .health-none      { background: #1e293b; color: #64748b; }
+
     #error-banner {
       display: none;
       background: #7f1d1d;
@@ -321,6 +333,72 @@
       </div>`;
     }
 
+    function dockerCard(containers) {
+      if (!containers) containers = [];
+      let rows = containers.map(c => {
+        const badgeClass = `health-${c.health}`;
+        return `
+          <div class="section-sep">${c.names}</div>
+          <div class="metric-row">
+            <span class="metric-label">Image</span>
+            <span class="metric-value">${c.image}</span>
+          </div>
+          <div class="metric-row">
+            <span class="metric-label">State</span>
+            <span class="metric-value">${c.state}</span>
+          </div>
+          <div class="metric-row">
+            <span class="metric-label">Status</span>
+            <span class="metric-value" style="font-size:0.82rem">${c.status}</span>
+          </div>
+          <div class="metric-row">
+            <span class="metric-label">Health</span>
+            <span class="metric-value"><span class="health-badge ${badgeClass}">${c.health}</span></span>
+          </div>
+        `;
+      }).join('');
+      return `<div class="card">
+        <div class="card-title"><span class="icon">🐳</span>Docker Containers</div>
+        ${rows || '<div style="color:#64748b">No containers running</div>'}
+      </div>`;
+    }
+
+    function speedCard(speed) {
+      if (!speed) {
+        return `<div class="card">
+          <div class="card-title"><span class="icon">🌍</span>Internet Speed</div>
+          <div style="color:#64748b">Not yet measured</div>
+        </div>`;
+      }
+      const checkedAt = speed.last_checked
+        ? new Date(speed.last_checked).toLocaleTimeString() : '–';
+      if (!speed.available) {
+        return `<div class="card">
+          <div class="card-title"><span class="icon">🌍</span>Internet Speed</div>
+          <div style="color:#f87171">Speed test unavailable</div>
+          <div class="metric-row">
+            <span class="metric-label">Last checked</span>
+            <span class="metric-value">${checkedAt}</span>
+          </div>
+        </div>`;
+      }
+      return `<div class="card">
+        <div class="card-title"><span class="icon">🌍</span>Internet Speed <span style="font-size:0.7rem;color:#475569;margin-left:4px">(updated every 1h)</span></div>
+        <div class="metric-row">
+          <span class="metric-label">↓ Download</span>
+          <span class="metric-value">${speed.download_mbps.toFixed(2)} Mbps</span>
+        </div>
+        <div class="metric-row">
+          <span class="metric-label">↑ Upload</span>
+          <span class="metric-value">${speed.upload_mbps > 0 ? speed.upload_mbps.toFixed(2) + ' Mbps' : '–'}</span>
+        </div>
+        <div class="metric-row">
+          <span class="metric-label">Last checked</span>
+          <span class="metric-value">${checkedAt}</span>
+        </div>
+      </div>`;
+    }
+
     // ── Render ─────────────────────────────────────────────────────────────
 
     function render(data) {
@@ -331,7 +409,9 @@
         diskCard(data.disks) +
         ioCard(data.disk_io) +
         netCard(data.network) +
-        tempCard(data.temperature);
+        tempCard(data.temperature) +
+        dockerCard(data.docker) +
+        speedCard(data.internet_speed);
 
       document.getElementById('timestamp').textContent =
         'Last updated: ' + new Date(data.timestamp).toLocaleTimeString();
