@@ -5,6 +5,7 @@
 #include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -238,16 +239,151 @@ std::vector<ThermalZone> HealthCollector::getThermalZones() {
 }
 
 // ---------------------------------------------------------------------------
+// Static member definitions
+// ---------------------------------------------------------------------------
+
+SpeedTestResult HealthCollector::s_speedResult;
+std::mutex      HealthCollector::s_speedMutex;
+
+// ---------------------------------------------------------------------------
+// Docker containers  –  `docker ps`
+// ---------------------------------------------------------------------------
+
+// Extract a value from a tab-separated field produced by docker ps --format
+static std::string extractHealth(const std::string& status) {
+    // Status examples:
+    //   "Up 2 hours (healthy)"
+    //   "Up 3 minutes (unhealthy)"
+    //   "Up 5 minutes (health: starting)"
+    //   "Up 2 hours"  → no health check
+    //   "Exited (0) ..."
+    auto lp = status.find('(');
+    if (lp == std::string::npos) return "none";
+    auto rp = status.find(')', lp);
+    std::string inner = status.substr(lp + 1, rp == std::string::npos ? std::string::npos : rp - lp - 1);
+    if (inner == "healthy")   return "healthy";
+    if (inner == "unhealthy") return "unhealthy";
+    if (inner.rfind("health:", 0) == 0) return "starting";
+    return "none";
+}
+
+std::vector<DockerContainer> HealthCollector::getDockerContainers() {
+    std::vector<DockerContainer> result;
+    // Use tab-separated format to avoid needing a JSON parser
+    FILE* fp = popen(
+        "docker ps --format \"{{.ID}}\\t{{.Image}}\\t{{.Names}}\\t{{.Status}}\\t{{.State}}\" 2>/dev/null",
+        "r");
+    if (!fp) return result;
+
+    char buf[1024];
+    while (fgets(buf, sizeof(buf), fp)) {
+        std::string line(buf);
+        // strip trailing newline
+        if (!line.empty() && line.back() == '\n') line.pop_back();
+
+        std::istringstream ss(line);
+        DockerContainer c;
+        std::getline(ss, c.id,     '\t');
+        std::getline(ss, c.image,  '\t');
+        std::getline(ss, c.names,  '\t');
+        std::getline(ss, c.status, '\t');
+        std::getline(ss, c.state,  '\t');
+        c.health = extractHealth(c.status);
+        if (!c.id.empty()) result.push_back(c);
+    }
+    pclose(fp);
+    return result;
+}
+
+// ---------------------------------------------------------------------------
+// Internet speed test  –  cached, refreshed every 1 h from a background thread
+// Uses speedtest-cli if available, otherwise falls back to curl download test.
+// ---------------------------------------------------------------------------
+
+static std::string runCommand(const char* cmd) {
+    FILE* fp = popen(cmd, "r");
+    if (!fp) return "";
+    char buf[256];
+    std::string out;
+    while (fgets(buf, sizeof(buf), fp)) out += buf;
+    pclose(fp);
+    // strip trailing whitespace
+    while (!out.empty() && (out.back() == '\n' || out.back() == '\r' || out.back() == ' '))
+        out.pop_back();
+    return out;
+}
+
+void HealthCollector::updateSpeedTestCache() {
+    SpeedTestResult res;
+
+    // Prefer speedtest-cli (pip install speedtest-cli)
+    std::string which = runCommand("which speedtest-cli 2>/dev/null");
+    if (!which.empty()) {
+        // speedtest-cli --simple outputs:
+        //   Ping: X ms
+        //   Download: X Mbit/s
+        //   Upload: X Mbit/s
+        std::string out = runCommand("speedtest-cli --simple 2>/dev/null");
+        std::istringstream ss(out);
+        std::string line;
+        while (std::getline(ss, line)) {
+            if (line.rfind("Download:", 0) == 0) {
+                std::istringstream ls(line.substr(9));
+                ls >> res.download_mbps;
+            } else if (line.rfind("Upload:", 0) == 0) {
+                std::istringstream ls(line.substr(7));
+                ls >> res.upload_mbps;
+            }
+        }
+        res.available = (res.download_mbps > 0.0f || res.upload_mbps > 0.0f);
+    }
+
+    // Fallback: curl download test against Cloudflare speed endpoint
+    if (!res.available) {
+        std::string out = runCommand(
+            "curl -s --max-time 20 -o /dev/null "
+            "-w \"%{speed_download}\" "
+            "https://speed.cloudflare.com/__down?bytes=5000000 2>/dev/null");
+        if (!out.empty()) {
+            try {
+                float bytesPerSec = std::stof(out);
+                res.download_mbps = bytesPerSec * 8.0f / 1e6f;
+                res.available = (res.download_mbps > 0.0f);
+            } catch (...) {}
+        }
+    }
+
+    // Timestamp
+    std::time_t now = std::time(nullptr);
+    char tsBuf[32];
+    std::strftime(tsBuf, sizeof(tsBuf), "%Y-%m-%dT%H:%M:%SZ", std::gmtime(&now));
+    res.timestamp = tsBuf;
+
+    std::lock_guard<std::mutex> lock(s_speedMutex);
+    s_speedResult = res;
+}
+
+
+
+// ---------------------------------------------------------------------------
 // Assemble JSON
 // ---------------------------------------------------------------------------
 
 std::string HealthCollector::getHealthJson() {
-    auto cpu  = getCpuInfo();
-    auto mem  = getMemoryInfo();
-    auto disks = getDiskInfo();
-    auto nets  = getNetworkInterfaces();
-    auto ios   = getDiskIOStats();
-    auto temps = getThermalZones();
+    auto cpu    = getCpuInfo();
+    auto mem    = getMemoryInfo();
+    auto disks  = getDiskInfo();
+    auto nets   = getNetworkInterfaces();
+    auto ios    = getDiskIOStats();
+    auto temps  = getThermalZones();
+    auto dockers = getDockerContainers();
+
+    // Snapshot cached speed result
+    SpeedTestResult speed;
+    {
+        std::lock_guard<std::mutex> lock(s_speedMutex);
+        speed = s_speedResult;
+    }
 
     // ISO-8601 timestamp
     std::time_t now = std::time(nullptr);
@@ -324,7 +460,30 @@ std::string HealthCollector::getHealthJson() {
           << "      \"temperature_celsius\": "  << t.temperature_celsius << "\n"
           << "    }" << (i + 1 < temps.size() ? "," : "") << "\n";
     }
-    j << "  ]\n";
+    j << "  ],\n";
+
+    // Docker containers
+    j << "  \"docker\": [\n";
+    for (size_t i = 0; i < dockers.size(); ++i) {
+        const auto& c = dockers[i];
+        j << "    {\n"
+          << "      \"id\": \""     << escapeJson(c.id)     << "\",\n"
+          << "      \"image\": \""  << escapeJson(c.image)  << "\",\n"
+          << "      \"names\": \""  << escapeJson(c.names)  << "\",\n"
+          << "      \"status\": \"" << escapeJson(c.status) << "\",\n"
+          << "      \"state\": \""  << escapeJson(c.state)  << "\",\n"
+          << "      \"health\": \"" << escapeJson(c.health) << "\"\n"
+          << "    }" << (i + 1 < dockers.size() ? "," : "") << "\n";
+    }
+    j << "  ],\n";
+
+    // Internet speed (cached)
+    j << "  \"internet_speed\": {\n"
+      << "    \"available\": "       << (speed.available ? "true" : "false") << ",\n"
+      << "    \"download_mbps\": "   << speed.download_mbps                  << ",\n"
+      << "    \"upload_mbps\": "     << speed.upload_mbps                    << ",\n"
+      << "    \"last_checked\": \""  << escapeJson(speed.timestamp)          << "\"\n"
+      << "  }\n";
 
     j << "}\n";
     return j.str();

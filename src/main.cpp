@@ -5,6 +5,8 @@
 #include <fstream>
 #include <iostream>
 #include <sstream>
+#include <thread>
+#include <chrono>
 
 static std::string readHtmlFile(const std::string& path) {
     std::ifstream f(path);
@@ -15,6 +17,16 @@ static std::string readHtmlFile(const std::string& path) {
 }
 
 int main() {
+    // Start background thread: run internet speed test immediately, then every 1 hour
+    std::thread speedThread([]() {
+        HealthCollector::updateSpeedTestCache();
+        while (true) {
+            std::this_thread::sleep_for(std::chrono::hours(1));
+            HealthCollector::updateSpeedTestCache();
+        }
+    });
+    speedThread.detach();
+
     httplib::Server svr;
 
     // Serve the web dashboard
