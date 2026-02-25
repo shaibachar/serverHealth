@@ -73,6 +73,7 @@ public:
 private:
     std::string proc_path_;
     std::string sys_path_;
+    std::string host_root_path_;
 
     std::vector<DiskInfo>         getDiskInfo();
     CpuInfo                       getCpuInfo();

@@ -1,5 +1,6 @@
 #include "health_collector.h"
 
+#include <cctype>
 #include <chrono>
 #include <cstdlib>
 #include <ctime>
@@ -39,6 +40,30 @@ static std::string escapeJson(const std::string& s) {
     return out;
 }
 
+static std::string decodeMountField(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (size_t i = 0; i < s.size(); ++i) {
+        if (s[i] == '\\' && i + 3 < s.size() &&
+            std::isdigit(static_cast<unsigned char>(s[i + 1])) &&
+            std::isdigit(static_cast<unsigned char>(s[i + 2])) &&
+            std::isdigit(static_cast<unsigned char>(s[i + 3]))) {
+            int v = (s[i + 1] - '0') * 64 + (s[i + 2] - '0') * 8 + (s[i + 3] - '0');
+            out.push_back(static_cast<char>(v));
+            i += 3;
+            continue;
+        }
+        out.push_back(s[i]);
+    }
+    return out;
+}
+
+static std::string hostPathForMount(const std::string& hostRoot, const std::string& mountPath) {
+    if (hostRoot.empty() || hostRoot == "/") return mountPath;
+    if (mountPath == "/") return hostRoot;
+    return hostRoot + mountPath;
+}
+
 // ---------------------------------------------------------------------------
 // constructor
 // ---------------------------------------------------------------------------
@@ -46,8 +71,10 @@ static std::string escapeJson(const std::string& s) {
 HealthCollector::HealthCollector() {
     const char* proc = std::getenv("PROC_PATH");
     const char* sys  = std::getenv("SYS_PATH");
+    const char* root = std::getenv("HOST_ROOT_PATH");
     proc_path_ = proc ? proc : "/proc";
     sys_path_  = sys  ? sys  : "/sys";
+    host_root_path_ = root ? root : "";
 }
 
 // ---------------------------------------------------------------------------
@@ -125,6 +152,7 @@ std::vector<DiskInfo> HealthCollector::getDiskInfo() {
         std::istringstream ss(line);
         std::string dev, mount, fstype;
         ss >> dev >> mount >> fstype;
+        mount = decodeMountField(mount);
         // skip pseudo filesystems
         if (fstype == "proc" || fstype == "sysfs" || fstype == "tmpfs" ||
             fstype == "devtmpfs" || fstype == "cgroup" || fstype == "cgroup2" ||
@@ -133,7 +161,8 @@ std::vector<DiskInfo> HealthCollector::getDiskInfo() {
         if (dev.rfind("/dev/", 0) != 0) continue;
 
         struct statvfs st{};
-        if (statvfs(mount.c_str(), &st) != 0) continue;
+        std::string statPath = hostPathForMount(host_root_path_, mount);
+        if (statvfs(statPath.c_str(), &st) != 0) continue;
 
         DiskInfo di;
         di.path         = mount;

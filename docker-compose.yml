@@ -10,8 +10,13 @@ services:
       # Mount host /proc and /sys read-only so the container reads real metrics
       - /proc:/host/proc:ro
       - /sys:/host/sys:ro
+      # Mount host root for statvfs() disk usage lookups on real host mountpoints
+      - /:/host/root:ro
+      # Host Docker daemon socket so `docker ps` reflects host containers
+      - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - PROC_PATH=/host/proc
       - SYS_PATH=/host/sys
+      - HOST_ROOT_PATH=/host/root
       - PORT=9091
     restart: unless-stopped

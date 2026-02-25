@@ -1,0 +1,17 @@
+[Unit]
+Description=serverHealth Docker Compose stack (no rebuild)
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Change this to the folder that contains docker-compose.yml
+WorkingDirectory=/opt/serverHealth
+ExecStart=/usr/bin/docker compose up -d
+ExecStop=/usr/bin/docker compose down
+RemainAfterExit=yes
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target
