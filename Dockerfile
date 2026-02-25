@@ -34,8 +34,8 @@ COPY --from=builder /build/_build/serverhealth /usr/bin/serverhealth
 COPY web/ /usr/share/serverhealth/
 
 ENV WEB_ROOT=/usr/share/serverhealth
-ENV PORT=9090
+ENV PORT=9091
 
-EXPOSE 9090
+EXPOSE 9091
 
 CMD ["/usr/bin/serverhealth"]

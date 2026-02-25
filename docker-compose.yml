@@ -5,7 +5,7 @@ services:
     build: .
     container_name: serverhealth
     ports:
-      - "9090:9090"
+      - "9091:9091"
     volumes:
       # Mount host /proc and /sys read-only so the container reads real metrics
       - /proc:/host/proc:ro
@@ -13,5 +13,5 @@ services:
     environment:
       - PROC_PATH=/host/proc
       - SYS_PATH=/host/sys
-      - PORT=9090
+      - PORT=9091
     restart: unless-stopped
