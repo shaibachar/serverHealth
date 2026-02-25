@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Server Health Dashboard</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      min-height: 100vh;
+    }
+
+    header {
+      background: #1e293b;
+      padding: 1.2rem 2rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 2px solid #334155;
+    }
+
+    header h1 {
+      font-size: 1.5rem;
+      font-weight: 700;
+      color: #38bdf8;
+      letter-spacing: 0.05em;
+    }
+
+    #status {
+      font-size: 0.85rem;
+      color: #94a3b8;
+    }
+
+    #status span {
+      color: #4ade80;
+      font-weight: 600;
+    }
+
+    #timestamp {
+      font-size: 0.8rem;
+      color: #64748b;
+    }
+
+    main {
+      padding: 2rem;
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+      gap: 1.5rem;
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+
+    .card {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 12px;
+      padding: 1.4rem;
+      transition: border-color 0.2s;
+    }
+
+    .card:hover { border-color: #38bdf8; }
+
+    .card-title {
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: #94a3b8;
+      margin-bottom: 1rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .card-title .icon { font-size: 1rem; }
+
+    /* Progress bar */
+    .bar-wrap {
+      background: #0f172a;
+      border-radius: 6px;
+      height: 8px;
+      margin: 0.4rem 0 0.2rem;
+      overflow: hidden;
+    }
+
+    .bar {
+      height: 100%;
+      border-radius: 6px;
+      transition: width 0.5s ease;
+    }
+
+    .bar.ok     { background: #4ade80; }
+    .bar.warn   { background: #facc15; }
+    .bar.danger { background: #f87171; }
+
+    .metric-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0.35rem 0;
+      border-bottom: 1px solid #1e3a5f22;
+      font-size: 0.88rem;
+    }
+
+    .metric-row:last-child { border-bottom: none; }
+
+    .metric-label { color: #94a3b8; }
+    .metric-value { font-weight: 600; color: #e2e8f0; }
+
+    .big-num {
+      font-size: 2.4rem;
+      font-weight: 700;
+      color: #38bdf8;
+      line-height: 1.1;
+    }
+
+    .big-sub {
+      font-size: 0.8rem;
+      color: #64748b;
+      margin-top: 0.15rem;
+    }
+
+    .section-sep {
+      margin: 0.8rem 0 0.4rem;
+      font-size: 0.78rem;
+      color: #475569;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .chip {
+      display: inline-block;
+      background: #0f172a;
+      border: 1px solid #334155;
+      border-radius: 20px;
+      padding: 0.15rem 0.6rem;
+      font-size: 0.78rem;
+      color: #94a3b8;
+      margin: 0.15rem 0.1rem;
+    }
+
+    #error-banner {
+      display: none;
+      background: #7f1d1d;
+      color: #fca5a5;
+      text-align: center;
+      padding: 0.6rem;
+      font-size: 0.9rem;
+    }
+
+    /* Spinner */
+    .spinner {
+      display: inline-block;
+      width: 10px; height: 10px;
+      border: 2px solid #334155;
+      border-top-color: #38bdf8;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin-left: 6px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🖥️ Server Health Dashboard</h1>
+    <div>
+      <div id="status">Auto-refresh: <span>5s</span> <span class="spinner" id="spinner"></span></div>
+      <div id="timestamp">–</div>
+    </div>
+  </header>
+  <div id="error-banner">⚠️ Could not reach /api/health</div>
+
+  <main id="grid">
+    <!-- cards injected by JS -->
+  </main>
+
+  <script>
+    const API = '/api/health';
+    const REFRESH_MS = 5000;
+
+    function fmt(bytes) {
+      if (bytes >= 1e12) return (bytes / 1e12).toFixed(2) + ' TB';
+      if (bytes >= 1e9)  return (bytes / 1e9).toFixed(2)  + ' GB';
+      if (bytes >= 1e6)  return (bytes / 1e6).toFixed(2)  + ' MB';
+      if (bytes >= 1e3)  return (bytes / 1e3).toFixed(1)  + ' KB';
+      return bytes + ' B';
+    }
+
+    function fmtKb(kb) { return fmt(kb * 1024); }
+
+    function barClass(pct) {
+      if (pct >= 90) return 'danger';
+      if (pct >= 70) return 'warn';
+      return 'ok';
+    }
+
+    function bar(pct) {
+      const cls = barClass(pct);
+      return `<div class="bar-wrap"><div class="bar ${cls}" style="width:${Math.min(pct,100).toFixed(1)}%"></div></div>`;
+    }
+
+    function tempClass(c) {
+      if (c >= 80) return '#f87171';
+      if (c >= 65) return '#facc15';
+      return '#4ade80';
+    }
+
+    // ── Card builders ─────────────────────────────────────────────────────
+
+    function cpuCard(cpu) {
+      return `<div class="card">
+        <div class="card-title"><span class="icon">⚡</span>CPU</div>
+        <div class="big-num">${cpu.usage_percent.toFixed(1)}%</div>
+        <div class="big-sub">usage</div>
+        ${bar(cpu.usage_percent)}
+        <div class="metric-row">
+          <span class="metric-label">Idle</span>
+          <span class="metric-value">${cpu.idle_percent.toFixed(1)}%</span>
+        </div>
+      </div>`;
+    }
+
+    function memCard(mem) {
+      return `<div class="card">
+        <div class="card-title"><span class="icon">🧠</span>Memory</div>
+        <div class="big-num">${mem.usage_percent.toFixed(1)}%</div>
+        <div class="big-sub">used</div>
+        ${bar(mem.usage_percent)}
+        <div class="metric-row">
+          <span class="metric-label">Used</span>
+          <span class="metric-value">${fmtKb(mem.used_kb)}</span>
+        </div>
+        <div class="metric-row">
+          <span class="metric-label">Available</span>
+          <span class="metric-value">${fmtKb(mem.available_kb)}</span>
+        </div>
+        <div class="metric-row">
+          <span class="metric-label">Total</span>
+          <span class="metric-value">${fmtKb(mem.total_kb)}</span>
+        </div>
+      </div>`;
+    }
+
+    function diskCard(disks) {
+      let rows = disks.map(d => `
+        <div class="section-sep">${d.path}</div>
+        ${bar(d.usage_percent)}
+        <div class="metric-row">
+          <span class="metric-label">Used</span>
+          <span class="metric-value">${fmtKb(d.used_kb)} / ${fmtKb(d.total_kb)} (${d.usage_percent.toFixed(1)}%)</span>
+        </div>
+        <div class="metric-row">
+          <span class="metric-label">Free</span>
+          <span class="metric-value">${fmtKb(d.free_kb)}</span>
+        </div>
+      `).join('');
+      return `<div class="card">
+        <div class="card-title"><span class="icon">💾</span>Disk Space</div>
+        ${rows || '<div style="color:#64748b">No data</div>'}
+      </div>`;
+    }
+
+    function ioCard(ios) {
+      let rows = ios.map(d => `
+        <div class="section-sep">${d.name}</div>
+        <div class="metric-row">
+          <span class="metric-label">Reads completed</span>
+          <span class="metric-value">${d.reads_completed.toLocaleString()}</span>
+        </div>
+        <div class="metric-row">
+          <span class="metric-label">Writes completed</span>
+          <span class="metric-value">${d.writes_completed.toLocaleString()}</span>
+        </div>
+        <div class="metric-row">
+          <span class="metric-label">Data read</span>
+          <span class="metric-value">${fmt(d.read_sectors * 512)}</span>
+        </div>
+        <div class="metric-row">
+          <span class="metric-label">Data written</span>
+          <span class="metric-value">${fmt(d.write_sectors * 512)}</span>
+        </div>
+      `).join('');
+      return `<div class="card">
+        <div class="card-title"><span class="icon">📀</span>Disk I/O</div>
+        ${rows || '<div style="color:#64748b">No data</div>'}
+      </div>`;
+    }
+
+    function netCard(nets) {
+      let rows = nets.map(n => `
+        <div class="section-sep">${n.name}</div>
+        <div class="metric-row">
+          <span class="metric-label">↓ Received</span>
+          <span class="metric-value">${fmt(n.rx_bytes)} (${n.rx_packets.toLocaleString()} pkts)</span>
+        </div>
+        <div class="metric-row">
+          <span class="metric-label">↑ Sent</span>
+          <span class="metric-value">${fmt(n.tx_bytes)} (${n.tx_packets.toLocaleString()} pkts)</span>
+        </div>
+      `).join('');
+      return `<div class="card">
+        <div class="card-title"><span class="icon">🌐</span>Network</div>
+        ${rows || '<div style="color:#64748b">No data</div>'}
+      </div>`;
+    }
+
+    function tempCard(temps) {
+      let rows = temps.map(t => `
+        <div class="metric-row">
+          <span class="metric-label">${t.name}</span>
+          <span class="metric-value" style="color:${tempClass(t.temperature_celsius)}">${t.temperature_celsius.toFixed(1)} °C</span>
+        </div>
+      `).join('');
+      return `<div class="card">
+        <div class="card-title"><span class="icon">🌡️</span>Temperature</div>
+        ${rows || '<div style="color:#64748b">No sensors found</div>'}
+      </div>`;
+    }
+
+    // ── Render ─────────────────────────────────────────────────────────────
+
+    function render(data) {
+      const grid = document.getElementById('grid');
+      grid.innerHTML =
+        cpuCard(data.cpu) +
+        memCard(data.memory) +
+        diskCard(data.disks) +
+        ioCard(data.disk_io) +
+        netCard(data.network) +
+        tempCard(data.temperature);
+
+      document.getElementById('timestamp').textContent =
+        'Last updated: ' + new Date(data.timestamp).toLocaleTimeString();
+      document.getElementById('error-banner').style.display = 'none';
+    }
+
+    async function fetchData() {
+      const spinner = document.getElementById('spinner');
+      spinner.style.display = 'inline-block';
+      try {
+        const resp = await fetch(API);
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const data = await resp.json();
+        render(data);
+      } catch (e) {
+        document.getElementById('error-banner').style.display = 'block';
+        console.error('Fetch error:', e);
+      } finally {
+        spinner.style.display = 'none';
+      }
+    }
+
+    fetchData();
+    setInterval(fetchData, REFRESH_MS);
+  </script>
+</body>
+</html>
